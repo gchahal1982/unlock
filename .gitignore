@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+
+# Logs
+*.log
+unlock.log
+
+# Tool binaries and downloaded artifacts
+bin/
+
+# Local test/output artifacts
+*.pyc
+__pycache__/
+
+# Vendor/external repos managed by setup.sh (re-clone as needed)
+ipwndfu/
+sshrd/
+
+# Keep repo payloads lightweight
+node_modules/
+*.tmp
+

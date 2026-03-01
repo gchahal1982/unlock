@@ -103,15 +103,55 @@ if [ "$SSHRD_MODE" -eq 1 ]; then
 #!/bin/sh
 echo "[sshrd] === SSHRD Activation Lock Bypass ==="
 
-# Mount filesystems
-mount -t apfs /dev/disk0s1s1 /mnt1 2>/dev/null || mount_apfs /dev/disk0s1s1 /mnt1 2>/dev/null || true
-mount -t apfs /dev/disk0s1s2 /mnt2 2>/dev/null || mount_apfs /dev/disk0s1s2 /mnt2 2>/dev/null || true
+# Discover disk layout
+echo "[sshrd] Disk devices:"
+ls /dev/disk* 2>/dev/null || true
+echo "[sshrd] Current mounts:"
+mount 2>/dev/null || true
 
-if [ ! -d "/mnt1/Applications" ]; then
-    echo "[sshrd] FATAL: rootfs not mounted at /mnt1"
+mkdir -p /mnt1 /mnt2
+
+# Mount rootfs
+ROOTFS_MOUNTED=0
+if mount | grep -q " /mnt1"; then
+    ROOTFS_MOUNTED=1
+else
+    for dev in /dev/disk0s1s1 /dev/disk0s1 /dev/disk1s1 /dev/disk0; do
+        [ ! -e "$dev" ] && continue
+        mount_apfs "$dev" /mnt1 2>/dev/null || mount -t apfs "$dev" /mnt1 2>/dev/null || continue
+        if [ -d "/mnt1/Applications" ]; then ROOTFS_MOUNTED=1; break; fi
+        umount /mnt1 2>/dev/null || true
+    done
+fi
+if [ "$ROOTFS_MOUNTED" -eq 0 ]; then
+    for dev in /dev/disk0s1s1 /dev/disk0s1s2 /dev/disk0s1s3 /dev/disk0s1s4 \
+               /dev/disk1s1 /dev/disk1s2 /dev/disk1s3 /dev/disk1s4; do
+        [ ! -e "$dev" ] && continue
+        mount_apfs "$dev" /mnt1 2>/dev/null || mount -t apfs "$dev" /mnt1 2>/dev/null || continue
+        if [ -d "/mnt1/Applications" ]; then ROOTFS_MOUNTED=1; echo "[sshrd] rootfs=$dev"; break; fi
+        umount /mnt1 2>/dev/null || true
+    done
+fi
+if [ "$ROOTFS_MOUNTED" -eq 0 ] || [ ! -d "/mnt1/Applications" ]; then
+    echo "[sshrd] FATAL: Cannot mount rootfs. ls /dev/disk*:"
+    ls -la /dev/disk* 2>/dev/null || true
     exit 1
 fi
-echo "[sshrd] Filesystems mounted: /mnt1 (rootfs), /mnt2 (data)"
+echo "[sshrd] rootfs mounted at /mnt1"
+
+# Mount data partition
+DATA_MOUNTED=0
+if mount | grep -q " /mnt2"; then
+    DATA_MOUNTED=1
+else
+    for dev in /dev/disk0s1s2 /dev/disk0s1s3 /dev/disk1s2 /dev/disk1s1; do
+        [ ! -e "$dev" ] && continue
+        mount_apfs "$dev" /mnt2 2>/dev/null || mount -t apfs "$dev" /mnt2 2>/dev/null || continue
+        if [ -d "/mnt2/root" ] || [ -d "/mnt2/mobile" ]; then DATA_MOUNTED=1; break; fi
+        umount /mnt2 2>/dev/null || true
+    done
+fi
+echo "[sshrd] Filesystems: /mnt1 (rootfs), /mnt2 (data: $([ $DATA_MOUNTED -eq 1 ] && echo OK || echo MISSING))"
 
 # Disable Setup.app
 if [ -d "/mnt1/Applications/Setup.app" ]; then

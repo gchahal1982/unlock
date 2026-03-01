@@ -774,43 +774,106 @@ bypass_via_sshrd() {
 #!/bin/sh
 echo "[sshrd] === SSHRD Activation Lock Bypass ==="
 
-# ── Mount filesystems ──
-echo "[sshrd] Mounting device filesystems..."
+# ── Discover and mount filesystems ──
+echo "[sshrd] Discovering disk layout..."
+echo "[sshrd] Available devices:"
+ls /dev/disk* 2>/dev/null || true
+echo ""
+echo "[sshrd] Current mounts:"
+mount 2>/dev/null || true
+echo ""
 
-# rootfs
-if mount | grep -q "/mnt1"; then
+# Create mount points
+mkdir -p /mnt1 /mnt2
+
+# ── Mount rootfs at /mnt1 ──
+echo "[sshrd] Mounting rootfs at /mnt1..."
+ROOTFS_MOUNTED=0
+
+if mount | grep -q " /mnt1"; then
     echo "[sshrd]   /mnt1 already mounted"
-else
-    mount -t apfs /dev/disk0s1s1 /mnt1 2>/dev/null || \
-    mount_apfs /dev/disk0s1s1 /mnt1 2>/dev/null || \
-    mount -t hfs /dev/disk0s1s1 /mnt1 2>/dev/null || true
+    ROOTFS_MOUNTED=1
 fi
 
-# data partition
-if mount | grep -q "/mnt2"; then
-    echo "[sshrd]   /mnt2 already mounted"
-else
-    mount -t apfs /dev/disk0s1s2 /mnt2 2>/dev/null || \
-    mount_apfs /dev/disk0s1s2 /mnt2 2>/dev/null || \
-    mount -t hfs /dev/disk0s1s2 /mnt2 2>/dev/null || true
+if [ "$ROOTFS_MOUNTED" -eq 0 ]; then
+    # Try common rootfs device paths
+    for dev in /dev/disk0s1s1 /dev/disk0s1 /dev/disk1s1 /dev/disk0; do
+        if [ -e "$dev" ]; then
+            echo "[sshrd]   Trying: mount_apfs $dev /mnt1"
+            if mount_apfs "$dev" /mnt1 2>/dev/null; then
+                echo "[sshrd]   Mounted $dev at /mnt1 (apfs)"
+                ROOTFS_MOUNTED=1
+                break
+            fi
+            echo "[sshrd]   Trying: mount -t apfs $dev /mnt1"
+            if mount -t apfs "$dev" /mnt1 2>/dev/null; then
+                echo "[sshrd]   Mounted $dev at /mnt1 (apfs -t)"
+                ROOTFS_MOUNTED=1
+                break
+            fi
+            echo "[sshrd]   Trying: mount -t hfs $dev /mnt1"
+            if mount -t hfs "$dev" /mnt1 2>/dev/null; then
+                echo "[sshrd]   Mounted $dev at /mnt1 (hfs)"
+                ROOTFS_MOUNTED=1
+                break
+            fi
+        fi
+    done
 fi
 
-# Verify mounts
-if [ ! -d "/mnt1/Applications" ]; then
-    echo "[sshrd] ERROR: /mnt1/Applications not found — rootfs not mounted"
-    echo "[sshrd] Trying alternate mount..."
-    mount_apfs -o rw /dev/disk0s1s1 /mnt1 2>/dev/null || true
-    if [ ! -d "/mnt1/Applications" ]; then
-        echo "[sshrd] FATAL: Cannot mount rootfs. Aborting."
-        exit 1
-    fi
+if [ "$ROOTFS_MOUNTED" -eq 0 ]; then
+    echo "[sshrd]   Trying brute-force: all /dev/disk* devices..."
+    for dev in /dev/disk0s1s1 /dev/disk0s1s2 /dev/disk0s1s3 /dev/disk0s1s4 \
+               /dev/disk1s1 /dev/disk1s2 /dev/disk1s3 /dev/disk1s4; do
+        [ ! -e "$dev" ] && continue
+        mount_apfs "$dev" /mnt1 2>/dev/null || mount -t apfs "$dev" /mnt1 2>/dev/null || continue
+        if [ -d "/mnt1/Applications" ]; then
+            echo "[sshrd]   Found rootfs on $dev"
+            ROOTFS_MOUNTED=1
+            break
+        fi
+        umount /mnt1 2>/dev/null || true
+    done
+fi
+
+if [ "$ROOTFS_MOUNTED" -eq 0 ] || [ ! -d "/mnt1/Applications" ]; then
+    echo "[sshrd] FATAL: Cannot mount rootfs at /mnt1."
+    echo "[sshrd] Debug — ls /dev/disk*:"
+    ls -la /dev/disk* 2>/dev/null || true
+    echo "[sshrd] Debug — mount output:"
+    mount 2>/dev/null || true
+    echo "[sshrd] Debug — ls /mnt1:"
+    ls /mnt1/ 2>/dev/null || echo "(empty or not mounted)"
+    exit 1
 fi
 echo "[sshrd]   rootfs mounted at /mnt1"
 
-if [ ! -d "/mnt2/root" ] && [ ! -d "/mnt2/mobile" ]; then
-    echo "[sshrd] WARNING: /mnt2 data partition may not be mounted correctly"
+# ── Mount data partition at /mnt2 ──
+echo "[sshrd] Mounting data partition at /mnt2..."
+DATA_MOUNTED=0
+
+if mount | grep -q " /mnt2"; then
+    echo "[sshrd]   /mnt2 already mounted"
+    DATA_MOUNTED=1
 fi
-echo "[sshrd]   data partition mounted at /mnt2"
+
+if [ "$DATA_MOUNTED" -eq 0 ]; then
+    for dev in /dev/disk0s1s2 /dev/disk0s1s3 /dev/disk1s2 /dev/disk1s1; do
+        if [ -e "$dev" ]; then
+            if mount_apfs "$dev" /mnt2 2>/dev/null || mount -t apfs "$dev" /mnt2 2>/dev/null || mount -t hfs "$dev" /mnt2 2>/dev/null; then
+                if [ -d "/mnt2/root" ] || [ -d "/mnt2/mobile" ]; then
+                    echo "[sshrd]   Found data partition on $dev"
+                    DATA_MOUNTED=1
+                    break
+                fi
+                umount /mnt2 2>/dev/null || true
+            fi
+        fi
+    done
+fi
+if [ "$DATA_MOUNTED" -eq 0 ]; then
+    echo "[sshrd] WARNING: Could not mount data partition — will patch what we can"
+fi
 
 # ── Remove Setup.app ──
 echo ""
@@ -1176,10 +1239,13 @@ main() {
     if [ "$BYPASS_METHOD" = "sshrd" ]; then
         # SSHRD flow: DFU → create ramdisk → boot → bypass → reboot (no tethered boot needed)
         if [ "$DEVICE_MODE" != "dfu" ]; then
-            enter_dfu
+            if ! enter_dfu; then
+                fail "Could not enter DFU. Cannot proceed with SSHRD bypass."
+                return 1
+            fi
         fi
-        sshrd_ensure_ready
-        sshrd_boot
+        sshrd_ensure_ready || return 1
+        sshrd_boot || return 1
         bypass_via_sshrd
         verify
         return

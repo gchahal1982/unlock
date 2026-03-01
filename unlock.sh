@@ -329,13 +329,18 @@ detect_device() {
         warn "ideviceinfo missing. Product details unavailable."
     fi
 
-    case $product_type in
-        iPhone5,1|iPhone5,2)       DEVICE_CHIP="A6";  BYPASS_METHOD="ipwndfu" ;;
-        iPhone5,3|iPhone5,4)       DEVICE_CHIP="A6";  BYPASS_METHOD="ipwndfu" ;;
-        iPhone7,1|iPhone7,2)       DEVICE_CHIP="A8";  BYPASS_METHOD="sshrd"; IOS_VERSION="${ios_version:-12.5.7}" ;;
-        iPhone9,1|iPhone9,2|iPhone9,3|iPhone9,4) DEVICE_CHIP="A10"; BYPASS_METHOD="checkra1n" ;;
-        *) DEVICE_CHIP="??"; BYPASS_METHOD="checkra1n"; warn "Unexpected: $product_type" ;;
-    esac
+    # Only auto-detect chip/method if --model was NOT explicitly passed
+    if [ "$FORCED_MODEL_SET" -eq 1 ]; then
+        info "Using forced model (--model $FORCED_DEVICE_TAG), skipping auto-detect."
+    else
+        case $product_type in
+            iPhone5,1|iPhone5,2)       DEVICE_CHIP="A6";  BYPASS_METHOD="ipwndfu" ;;
+            iPhone5,3|iPhone5,4)       DEVICE_CHIP="A6";  BYPASS_METHOD="ipwndfu" ;;
+            iPhone7,1|iPhone7,2)       DEVICE_CHIP="A8";  BYPASS_METHOD="sshrd"; IOS_VERSION="${ios_version:-12.5.7}" ;;
+            iPhone9,1|iPhone9,2|iPhone9,3|iPhone9,4) DEVICE_CHIP="A10"; BYPASS_METHOD="checkra1n" ;;
+            *) DEVICE_CHIP="??"; BYPASS_METHOD="checkra1n"; warn "Unexpected: $product_type" ;;
+        esac
+    fi
 
     DEVICE_PRODUCT="$product_type"
     DEVICE_IOS="$ios_version"

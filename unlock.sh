@@ -378,7 +378,7 @@ coach_dfu_sequence() {
 
     case "$state" in
         recovery)
-            state_msg="Recovery mode detected. Do this immediately from this screen:\n  1) Hold POWER for 3 seconds, then add HOME (POWER + HOME) for 10 seconds\n  2) Release POWER, keep HOME for 5 seconds\n  3) Keep HOME until screen is fully black, then release"
+            state_msg="Recovery mode detected. Do this immediately from this screen:\n  1) Hold POWER + HOME together for 8 seconds\n  2) Release POWER, keep HOME for 5 seconds\n  3) Keep HOME until screen is fully black, then release"
             ;;
         normal)
             state_msg="Device is in normal mode. If the screen is on, first turn it OFF with POWER, then start DFU timing."
@@ -399,16 +399,14 @@ coach_dfu_sequence() {
     case "$chip" in
         A6|A8)
             if [ "$state" = "recovery" ]; then
-                echo "  1) Hold ${BOLD}POWER${NC} for 3 seconds, then add ${BOLD}HOME${NC}."
-                echo "  2) Hold POWER + HOME for 10 seconds."
-                echo "  3) Release POWER, keep HOME for 5 seconds."
-                echo "  4) If screen goes black, hold HOME exactly until it stays black, then release."
-                echo "  5) If Apple logo appears, timing was wrong — do it again from OFF screen."
+                echo "  1) Hold ${BOLD}POWER + HOME${NC} together for 8 seconds."
+                echo "  2) Release POWER, keep HOME for 5 seconds."
+                echo "  3) If screen goes black, hold HOME exactly until it stays black, then release."
+                echo "  4) If Apple logo appears, timing was wrong — do it again from OFF screen."
             else
-                echo "  1) Hold ${BOLD}POWER${NC} for 3 seconds."
-                echo "  2) Hold POWER + HOME for 10 seconds."
-                echo "  3) Release POWER, keep HOME for 5 seconds."
-                echo "  4) Release HOME once screen remains black (no logo)."
+                echo "  1) Hold ${BOLD}POWER + HOME${NC} together for 8 seconds."
+                echo "  2) Release POWER, keep HOME for 5 seconds."
+                echo "  3) Release HOME once screen remains black (no logo)."
             fi
             ;;
         A10)
@@ -449,9 +447,8 @@ enter_dfu() {
     echo ""
     case $DEVICE_CHIP in
         A6|A8)
-            echo "  If screen is ON or on Welcome/activation: power it off first with POWER for 3-5 seconds."
-            echo "  Hold ${BOLD}POWER${NC} for 3 seconds."
-            echo "  Then hold ${BOLD}POWER + HOME${NC} for 10 seconds."
+            echo "  If screen is ON or on Welcome/activation: power it off first."
+            echo "  Hold ${BOLD}POWER + HOME${NC} together for 8 seconds."
             echo "  Release ${BOLD}POWER${NC}, keep ${BOLD}HOME${NC} for 5 seconds."
             echo "  Let go of HOME only when the screen stays black."
             ;;

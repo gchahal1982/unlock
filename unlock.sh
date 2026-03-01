@@ -723,10 +723,23 @@ bypass_activation() {
 #!/bin/bash
 echo "[device] === Activation Lock Bypass ==="
 
-# Mount filesystem rw
+# Mount filesystem rw (try APFS first, then HFS)
 echo "[device] Mounting rw..."
-mount -o rw,union,update / 2>/dev/null || true
+/sbin/mount -u / 2>/dev/null || true
+mount -o rw,update / 2>/dev/null || true
+mount_apfs -uw / 2>/dev/null || true
 /usr/bin/mount -uw / 2>/dev/null || true
+mount -o rw,union,update / 2>/dev/null || true
+# Test and report
+if touch /.bypass_rw_test 2>/dev/null; then
+    rm -f /.bypass_rw_test
+    echo "[device] rootfs is writable"
+else
+    echo "[device] WARNING: rootfs still read-only"
+    echo "[device] Trying APFS snapshot rename..."
+    snappy -f / -r orig-fs 2>/dev/null || true
+    /sbin/mount -u / 2>/dev/null || true
+fi
 # SSHRD mounts
 mount -t apfs /dev/disk0s1s1 /mnt1 2>/dev/null || true
 mount -t apfs /dev/disk0s1s2 /mnt2 2>/dev/null || true
@@ -746,8 +759,12 @@ fi
 # ── Remove Setup.app ──
 SA="${R}/Applications/Setup.app"
 if [ -d "$SA" ]; then
-    mv "$SA" "${SA}.disabled"
-    echo "[device] ✓ Setup.app disabled"
+    mv "$SA" "${SA}.disabled" 2>/dev/null
+    if [ ! -d "$SA" ]; then
+        echo "[device] ✓ Setup.app disabled"
+    else
+        echo "[device] ✗ Setup.app move FAILED (read-only filesystem)"
+    fi
 else
     find ${R:=/}/ -maxdepth 3 -name "Setup.app" -type d 2>/dev/null | while read p; do
         mv "$p" "${p}.disabled" 2>/dev/null && echo "[device] ✓ Disabled: $p"

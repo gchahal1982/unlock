@@ -1,7 +1,8 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════
 # Standalone Activation Lock Bypass via SSH
-# Run AFTER checkra1n jailbreak succeeds and device boots
+# Default: checkra1n-based (device must be booted + jailbroken)
+# --sshrd: SSHRD ramdisk mode (device must be in DFU)
 # ═══════════════════════════════════════════════════════
 set -uo pipefail
 
@@ -17,12 +18,190 @@ fail()    { echo -e "${RED}[✗]${NC} $1"; }
 SSH_PORT=44
 SSH_PASS="alpine"
 SSH_CMD=""
+SSHRD_MODE=0
+
+# ── Parse flags ──
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --sshrd)
+            SSHRD_MODE=1
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
 
 echo ""
 echo "  ╔═══════════════════════════════════════════╗"
+if [ "$SSHRD_MODE" -eq 1 ]; then
+echo "  ║  Activation Lock Bypass (SSHRD ramdisk)    ║"
+else
 echo "  ║  Activation Lock Bypass (standalone)       ║"
+fi
 echo "  ╚═══════════════════════════════════════════╝"
 echo ""
+
+# ═══════════════════════════════════════════
+# SSHRD MODE: boot ramdisk, connect SSH, bypass with /mnt1 /mnt2
+# ═══════════════════════════════════════════
+if [ "$SSHRD_MODE" -eq 1 ]; then
+    info "SSHRD mode: device should be in DFU."
+
+    # Ensure SSHRD_Script exists
+    if [ ! -d "$SCRIPT_DIR/sshrd" ]; then
+        info "Cloning SSHRD_Script..."
+        git clone https://github.com/verygenericname/SSHRD_Script.git "$SCRIPT_DIR/sshrd" 2>/dev/null || {
+            fail "Clone failed."
+            exit 1
+        }
+    fi
+
+    cd "$SCRIPT_DIR/sshrd"
+    chmod +x ./sshrd.sh 2>/dev/null || true
+
+    # Create ramdisk if not cached
+    if [ ! -d "$SCRIPT_DIR/sshrd/sshramdisk" ]; then
+        info "Creating SSH ramdisk for iOS 12.5.7..."
+        ./sshrd.sh 12.5.7 || { fail "Failed to create ramdisk."; exit 1; }
+    fi
+
+    # Boot ramdisk
+    info "Booting SSHRD ramdisk..."
+    ./sshrd.sh boot || { fail "Boot failed."; exit 1; }
+    cd "$SCRIPT_DIR"
+
+    # Start iproxy and wait for SSH
+    pkill -f "iproxy 2222" 2>/dev/null || true
+    sleep 1
+    iproxy 2222 22 &>/dev/null &
+
+    local_ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5"
+    elapsed=0
+    info "Waiting for SSH (up to 60s)..."
+    while [ $elapsed -lt 60 ]; do
+        if sshpass -p alpine ssh $local_ssh_opts -p 2222 root@localhost "echo ok" &>/dev/null; then
+            success "SSH connected to SSHRD ramdisk."
+            SSH_CMD="sshpass -p alpine ssh $local_ssh_opts -p 2222 root@localhost"
+            break
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+
+    if [ -z "$SSH_CMD" ]; then
+        fail "SSH connection timed out."
+        exit 1
+    fi
+
+    # Run SSHRD bypass payload
+    info "Running SSHRD bypass payload..."
+    echo ""
+
+    $SSH_CMD << 'SSHRD_PAYLOAD'
+#!/bin/sh
+echo "[sshrd] === SSHRD Activation Lock Bypass ==="
+
+# Mount filesystems
+mount -t apfs /dev/disk0s1s1 /mnt1 2>/dev/null || mount_apfs /dev/disk0s1s1 /mnt1 2>/dev/null || true
+mount -t apfs /dev/disk0s1s2 /mnt2 2>/dev/null || mount_apfs /dev/disk0s1s2 /mnt2 2>/dev/null || true
+
+if [ ! -d "/mnt1/Applications" ]; then
+    echo "[sshrd] FATAL: rootfs not mounted at /mnt1"
+    exit 1
+fi
+echo "[sshrd] Filesystems mounted: /mnt1 (rootfs), /mnt2 (data)"
+
+# Disable Setup.app
+if [ -d "/mnt1/Applications/Setup.app" ]; then
+    mv "/mnt1/Applications/Setup.app" "/mnt1/Applications/Setup.app.disabled"
+    echo "[sshrd] Setup.app disabled"
+else
+    echo "[sshrd] Setup.app already disabled"
+fi
+
+# Disable mobileactivationd
+DP="/mnt1/System/Library/LaunchDaemons/com.apple.mobileactivationd.plist"
+[ -f "$DP" ] && mv "$DP" "${DP}.disabled" && echo "[sshrd] mobileactivationd disabled"
+
+# Clear activation records
+rm -rf /mnt2/root/Library/Lockdown/activation_records 2>/dev/null
+mkdir -p /mnt2/root/Library/Lockdown/activation_records
+rm -rf /mnt2/mobile/Library/mad/activation_records 2>/dev/null
+mkdir -p /mnt2/mobile/Library/mad
+echo "[sshrd] Activation records cleared"
+
+# Write data_ark.plist
+mkdir -p /mnt2/root/Library/Lockdown
+cat > /mnt2/root/Library/Lockdown/data_ark.plist << 'PLIST1'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>ActivationState</key>
+    <string>Activated</string>
+    <key>BrickState</key>
+    <false/>
+</dict>
+</plist>
+PLIST1
+chmod 644 /mnt2/root/Library/Lockdown/data_ark.plist
+echo "[sshrd] data_ark.plist written"
+
+# Write stub activation record
+cat > /mnt2/root/Library/Lockdown/activation_records/activation_record.plist << 'PLIST2'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>ActivationState</key>
+    <string>Activated</string>
+</dict>
+</plist>
+PLIST2
+chmod 644 /mnt2/root/Library/Lockdown/activation_records/activation_record.plist
+echo "[sshrd] activation_record.plist written"
+
+# Mark setup complete
+mkdir -p /mnt2/mobile/Library/Preferences
+cat > /mnt2/mobile/Library/Preferences/com.apple.purplebuddy.plist << 'PLIST3'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>SetupDone</key>
+    <true/>
+    <key>SetupFinishedAllSteps</key>
+    <true/>
+</dict>
+</plist>
+PLIST3
+chmod 644 /mnt2/mobile/Library/Preferences/com.apple.purplebuddy.plist
+echo "[sshrd] purplebuddy.plist written"
+
+echo ""
+echo "[sshrd] ══════════════════════════════════════"
+echo "[sshrd] SSHRD BYPASS COMPLETE"
+echo "[sshrd] ══════════════════════════════════════"
+SSHRD_PAYLOAD
+
+    echo ""
+    info "Rebooting device..."
+    $SSH_CMD "reboot" 2>/dev/null || true
+    pkill -f "iproxy 2222" 2>/dev/null || true
+
+    echo ""
+    success "Done. Device boots normally — no tethered reboot needed."
+    echo ""
+    echo "  If still locked: re-enter DFU, run: bash bypass.sh --sshrd"
+    echo ""
+    exit 0
+fi
+
+# ═══════════════════════════════════════════
+# DEFAULT MODE: checkra1n-based bypass (existing behavior)
+# ═══════════════════════════════════════════
 
 # ── Check device ──
 info "Checking for connected device..."

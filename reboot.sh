@@ -20,16 +20,30 @@ echo ""
 echo "  Tethered Boot — re-exploit a bypassed device"
 echo ""
 echo "  Which device?"
-echo "    1) iPhone 5  (A6)"
-echo "    2) iPhone 6  (A8)"
-echo "    3) iPhone 7  (A10)"
+echo "    1) iPhone 5  (A6)  — needs tethered boot"
+echo "    2) iPhone 6  (A8)  — SSHRD bypass: boots normally (no tethered boot needed)"
+echo "    3) iPhone 7  (A10) — needs tethered boot"
 read -p "  Enter 1, 2, or 3: " choice
+
+if [ "$choice" = "2" ]; then
+    echo ""
+    echo -e "${GREEN}[✓]${NC} iPhone 6 / 6 Plus (A8) was bypassed via SSHRD."
+    echo ""
+    echo "  These devices boot normally — no tethered reboot needed."
+    echo "  The bypass modified persistent filesystem (Setup.app, activation records)."
+    echo ""
+    echo "  If the device is stuck or shows Activation Lock again:"
+    echo "    1. Enter DFU (Power+Home 8s, release Power, hold Home 5s)"
+    echo "    2. Run: bash unlock.sh --model i6p"
+    echo "    or: bash bypass.sh --sshrd"
+    echo ""
+    exit 0
+fi
 
 echo ""
 echo "  Put device in DFU now:"
 case $choice in
     1) echo "  Hold ${BOLD}POWER + HOME${NC} 8s → release POWER, keep HOME 5s" ;;
-    2) echo "  Hold ${BOLD}POWER + HOME${NC} 8s → release POWER, keep HOME 5s" ;;
     3) echo "  Hold ${BOLD}POWER + VOL DOWN${NC} 8s → release POWER, keep VOL DOWN 5s" ;;
 esac
 echo ""
@@ -51,7 +65,7 @@ case $choice in
         ./sshrd.sh boot 2>/dev/null || true
         cd "$SCRIPT_DIR"
         ;;
-    2|3)
+    3)
         echo -e "${CYAN}[*]${NC} Re-running checkra1n..."
         checkra1n -c -v
         ;;

@@ -282,8 +282,8 @@ else
     git clone https://github.com/axi0mX/ipwndfu.git "$SCRIPT_DIR/ipwndfu" 2>/dev/null && success "ipwndfu cloned." || warn "Clone failed — try manually: git clone https://github.com/axi0mX/ipwndfu.git"
 fi
 
-# ── SSHRD_Script (SSH ramdisk for iPhone 5) ──
-info "SSHRD_Script (SSH ramdisk for iPhone 5 filesystem access)..."
+# ── SSHRD_Script (SSH ramdisk for A6-A8 devices) ──
+info "SSHRD_Script (SSH ramdisk for A6-A8 devices: iPhone 5/6/6 Plus)..."
 if [ -d "$SCRIPT_DIR/sshrd" ]; then
     success "SSHRD_Script already cloned."
 else

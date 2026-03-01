@@ -118,9 +118,20 @@ fi
 if [ "$ROOTFS_WRITABLE" -eq 0 ]; then
     echo "[device]   Trying APFS snapshot rename..."
     if command -v snappy >/dev/null 2>&1; then
-        echo "[device]   Snapshots before:"
+        echo "[device]   Listing APFS snapshots..."
         snappy -f / -l 2>/dev/null || true
-        snappy -f / -r orig-fs 2>/dev/null && echo "[device]   Snapshot renamed (need reboot+re-jailbreak)" || true
+        SNAP_NAME=$(snappy -f / -l 2>/dev/null | grep "com.apple.os.update" | head -n1 | tr -d '[:space:]')
+        if [ -n "$SNAP_NAME" ]; then
+            echo "[device]   Found snapshot: $SNAP_NAME"
+            echo "[device]   Renaming snapshot to orig-fs..."
+            snappy -f / -r "$SNAP_NAME" -t orig-fs 2>/dev/null && \
+                echo "[device]   SNAPSHOT RENAMED — rootfs will be writable after reboot+re-jailbreak" || \
+                echo "[device]   Rename failed, trying delete..."
+            snappy -f / -d "$SNAP_NAME" 2>/dev/null && \
+                echo "[device]   SNAPSHOT DELETED" || true
+        else
+            echo "[device]   No com.apple.os.update snapshot found"
+        fi
     fi
 
     # Also try fsctl
